@@ -53,6 +53,10 @@ Resolve the per-page template SVG via `spec_lock.md page_layouts` (authoritative
 
 **Geometry adapts to the type, never the reverse**: when the locked size is larger than the template's placeholder text, widen / heighten the card, open spacing, and recompute child `y` / `dy` to make room — do not shrink the font to fit the inherited container. A `font-size` change is a layout change: revise line-height and every downstream vertical coordinate that depends on it. For wrapped text, allocate at least the wrapped line count × line-height plus top / bottom padding; fixed `y` stacks copied from a smaller template are invalid once the locked role size is applied. The Executor renders the page it was given; page count and per-page density are the Strategist's call, fixed at confirmation — do **not** re-paginate, split the page, or drop authored content to cope with size here. Only when a single block still cannot fit after the geometry is fully reflowed may you shrink **that block** as a bounded last resort — and **only body text** is ever shrunk this way. Title, subtitle, annotation / caption, footnote and page number are **locked once set and never adjusted to fit** — their values hold across the whole deck. Step the overflowing body block's `font-size` down by `2`px at a time, and only if it still overflows step it down again, up to a cumulative floor of **`4`px below the locked body size** (e.g. `24` → no smaller than `20`). This is a **local, single-block** reduction — the deck-wide locked body size is unchanged on every other block and page. (The Executor works in **unitless px** throughout — spec_lock and SVG carry no `pt`.) If the block still overflows at the floor, surface a `warning:` rather than silently restructure the page. (Mirror templates are the exception: §1.1 preserves their sizes verbatim — there the source deck's typography *is* the spec.)
 
+**Hard rule — no final text overflow**: the final SVG MUST NOT leave any text hanging outside the page canvas or outside its intended visual container (card, panel, column, label box, footer band, etc.). Treat overflow as a generation failure, not as an acceptable tradeoff. Resolve fit in this order: (1) re-wrap with explicit `<tspan>` line breaks, (2) enlarge or reposition the local container and recompute downstream geometry, (3) tighten non-essential local whitespace / decorative space, (4) apply the bounded body-text shrink rule above when eligible. Never allow a Japanese / CJK paragraph, title, or label to clip past the right edge, run below the card, or cross into neighboring content merely because the source copy is longer than an English placeholder.
+
+**Hard rule — keep export slack, not just SVG fit**: a textbox that mathematically fits in SVG but leaves almost no right / bottom slack is still a defect. PPT may wrap one line earlier or use slightly taller metrics, which turns a zero-margin fit into overlap with the next textbox. When a block sits inside a card / panel / label box, leave visible spare room on the right and bottom; when two independent text blocks stack in one column, keep a clear vertical buffer instead of relying on exact current line breaks. If a block only fits by hugging the edge, re-wrap or grow the container now.
+
 ### 1.1 Mirror-mode templates — reference-style consumption
 
 When the project's chosen template is a `mirror` template (`design_spec.md` frontmatter declares `replication_mode: mirror`), Executor switches to a **reference-style** consumption path that bypasses placeholder substitution:
@@ -106,6 +110,7 @@ Before the first SVG page, output a confirmation listing: canvas dimensions, bod
 **Per-block expression**: render each `design_spec.md §IX Content` block in its written texture — a full-sentence block as wrapped prose, a fragment/label block as bullets/keywords. **Never split a full-sentence block into a bullet list** — splitting loses the information that the block was continuous reasoning, not a set of parallel points; not because a bullet lays out easier, and not because an inherited template slot is shaped as a list. If a block carries no clear texture, infer the mode from its wording and the page layout.
 
 - **Prose render recipe**: one `<text>` per paragraph; wrap lines with sibling `<tspan>` that reset `x` to the block's left edge and advance `dy` by the font size × a line-height factor. **Default — line-height by density (may override per content fit)**: ~1.4–1.5× for dense / small-body blocks (CLReq comfortable minimum), 1.6–2.0× for large-type, sparse, or `breathing` blocks. Fit about width ÷ font-size CJK glyphs per line (Latin fits roughly twice that); the last line runs short. Use the body ramp size, not a new one.
+- **Default — CJK/Japanese wrap conservatively**: for Japanese / CJK copy, do not pack to the raw mathematical maximum characters per line. Start from roughly **70–85%** of the naive `width ÷ font-size` estimate, then adjust by punctuation and mixed Latin tokens. Bias toward one extra line over a cramped last line: shorter, cleaner wraps are preferred to boxes that technically fit but visually overflow once exported to PPT.
 - **Template precedence**: when an inherited template slot is a bullet list but the §IX block is prose, the prose wins — widen or reflow the container to hold the paragraph, or drop that card; do not pour the sentence back into the list slot.
 - **Mode precedence**: the locked mode shapes voice / register, not §IX's authored titles or page order. When a `§IX` title is a user-authored topic label, keep it — do not upgrade it to an assertion just because the mode (e.g. `pyramid`) favors them; mode title-tendencies apply only to AI-drafted titles.
 
@@ -118,6 +123,7 @@ Before the first SVG page, output a confirmation listing: canvas dimensions, bod
 - Colors (fill / stroke / stop-color) MUST come from `colors`
 - Icons MUST come from `icons.inventory`; library MUST equal `icons.library`
 - Font family from `typography`: use role override (`title_family` / `body_family` / `emphasis_family` / `code_family`) if declared, else fall back to `font_family`
+- **Default — Japanese deck fallback**: when the deck language is Japanese and `spec_lock.typography` is missing a role-specific stack or only carries a generic legacy stack, normalize the CJK lead to `Yu Gothic` before writing SVG text, with `Meiryo` as the immediate fallback. Do not override an explicit user-chosen or template-locked non-`Yu Gothic` stack; this applies only as the default for underspecified Japanese decks.
 - Font sizes follow a **ramp anchored on `typography.body`**, not a closed menu. **Structural roles — page title, body, subtitle, annotation / caption, footnote / page number — render at one consistent size deck-wide, taken from their `spec_lock` slot; never re-pick a structural role's size page by page or carry a template's placeholder px.** This locks the **role**, not every glyph: a page may still carry deliberate typographic hierarchy — a lead-in sentence, an inline emphasis figure, a pull-quote, a kicker, a hero number — but each of those is its **own role / feature element** with its own size, **applied consistently deck-wide** (declare a recurring one as its own `spec_lock` slot). In-band intermediate sizes are for exactly these feature elements. What is banned is the *same* role drifting size to fit a container or by page whim — that scatter is what reads as unprofessional. Sizes outside every band require extending the lock first.
 - **The page's core message is primary — render it ≥ `body`.** The one-idea / key-claim / key-takeaway line a page is built around is its most important text; map it to the locked `lead` or `subtitle` slot (≥ `body`), never to a sub-`body` size. Demoting it below body while data callouts or labels sit larger inverts the hierarchy — the failure this prevents. If no `lead` / `subtitle` slot is locked for a recurring core-message line, surface it (per below) instead of improvising a smaller one. A footnote / page number / source credit uses the locked `footnote` (or `annotation`) slot — never an invented sub-`annotation` size; and the body-shrink last resort (§1.0) bottoms out at `body − 4`px, a hard floor never crossed.
 - **Write the locked px verbatim; at most 2 decimals.** `font-size` MUST be the exact px from `spec_lock.typography` — if `body` is `24`, write `24`; never substitute a "rounder" or PowerPoint-familiar number (`20` / `18` / `36`). The system is px-only — there is no pt to convert, and a remembered pt-style value written as px renders the whole deck the wrong size. Prefer whole numbers (sizes are clean even px); keep a decimal only for a slot that genuinely carries one in `spec_lock`. Never emit long tails like `20.8026`: the exporter rounds the final size to 1 decimal pt, so extra px precision is wasted noise.
@@ -390,7 +396,7 @@ After all SVG pages are finalized, enter Logic Construction Phase and write the 
 
 **Concrete examples** — same shape applies to any language; just write naturally in that language.
 
-中文 deck：
+中文deck：
 
 ```
 # 02_市场格局
@@ -398,7 +404,7 @@ After all SVG pages are finalized, enter Logic Construction Phase and write the 
 在明确了行业背景之后，我们来看具体的市场格局。当前线上零售集中度持续上升，前三大平台合计份额已经达到百分之六十八，腰部玩家正在被快速挤压，留给新进入者的窗口期不超过十八个月。这意味着我们的策略必须聚焦，而不是铺开。
 ```
 
-英文 deck：
+英文deck：
 
 ```
 # 02_market_landscape
@@ -412,7 +418,7 @@ Having framed the industry backdrop, let's look at the actual market landscape. 
 
 **Common mistakes to avoid**:
 - Leaving any bracketed stage marker (`[过渡]` / `[Transition]` / `[Pause]` / `[Data]` / `[Scan Room]` / `[Interactive]` / `[Benchmark]` etc.) in the text — they will be read aloud literally.
-- Adding `要点：① …` / `Key points: (1) …` / `时长：2分钟` / `Duration: 2 minutes` / `Flex: …` lines — TTS will speak "要点 一 …".
+- Adding `要点：① …`/`Key points: (1) …`/`时长：2分钟`/`Duration: 2 minutes`/`Flex: …` lines — TTS will speak "要点一…".
 - Mixing languages within one deck's notes.
 
 ### Task 2. Split Into Per-Page Note Files

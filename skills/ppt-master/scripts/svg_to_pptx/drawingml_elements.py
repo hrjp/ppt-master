@@ -925,9 +925,9 @@ _SERIF_WIDTH_FAMILIES = {
     'times new roman',
 }
 
-_TEXTBOX_PADDING_MIN_PX = 0.5
-_TEXTBOX_PADDING_MAX_PX = 2.0
-_TEXTBOX_PADDING_RATIO = 0.04
+_TEXTBOX_PADDING_MIN_PX = 4.0
+_TEXTBOX_PADDING_MAX_PX = 10.0
+_TEXTBOX_PADDING_RATIO = 0.18
 # Single-line auto-fit headroom interpolates between a low-caps base and an
 # all-caps ceiling by the fraction of cased letters that are uppercase. The
 # crude per-char width estimate undercounts capitals most, so all-caps lines
@@ -938,10 +938,14 @@ _TEXTBOX_PADDING_RATIO = 0.04
 # above the mixed-case and CJK render ratios; exact ratios shift with the
 # renderer's font substitution, so these carry deliberate margin rather than
 # tracking one environment's numbers.
-_TEXT_WIDTH_HEADROOM_BASE = 1.06
-_TEXT_WIDTH_HEADROOM_CAPS = 1.12
-_SERIF_TEXT_WIDTH_HEADROOM_BASE = 1.12
-_SERIF_TEXT_WIDTH_HEADROOM_CAPS = 1.36
+_TEXT_WIDTH_HEADROOM_BASE = 1.10
+_TEXT_WIDTH_HEADROOM_CAPS = 1.16
+_SERIF_TEXT_WIDTH_HEADROOM_BASE = 1.14
+_SERIF_TEXT_WIDTH_HEADROOM_CAPS = 1.38
+_CJK_TEXT_WIDTH_HEADROOM_BASE = 1.18
+_CJK_TEXT_WIDTH_HEADROOM_CAPS = 1.22
+_TEXTBOX_HEIGHT_BOTTOM_SLACK_RATIO = 0.28
+_TEXTBOX_HEIGHT_TOP_SLACK_RATIO = 0.08
 
 
 def _normalize_text(text: str, *, preserve_space: bool = False) -> str:
@@ -1046,6 +1050,22 @@ def _uppercase_fraction(runs: list[dict[str, Any]]) -> float:
     return upper / cased
 
 
+def _cjk_fraction(runs: list[dict[str, Any]]) -> float:
+    """Fraction of visible characters across ``runs`` that are CJK."""
+    cjk = 0
+    visible = 0
+    for run in runs:
+        for ch in str(run.get('text', '')):
+            if ch.isspace():
+                continue
+            visible += 1
+            if is_cjk_char(ch):
+                cjk += 1
+    if not visible:
+        return 0.0
+    return cjk / visible
+
+
 def _estimate_text_runs_width(
     runs: list[dict[str, Any]],
     *,
@@ -1065,7 +1085,10 @@ def _estimate_text_runs_width(
     if not include_headroom:
         return width
     caps = _uppercase_fraction(runs)
-    if any(_is_serif_run(run) for run in runs):
+    cjk = _cjk_fraction(runs)
+    if cjk >= 0.35:
+        base, ceiling = _CJK_TEXT_WIDTH_HEADROOM_BASE, _CJK_TEXT_WIDTH_HEADROOM_CAPS
+    elif any(_is_serif_run(run) for run in runs):
         base, ceiling = _SERIF_TEXT_WIDTH_HEADROOM_BASE, _SERIF_TEXT_WIDTH_HEADROOM_CAPS
     else:
         base, ceiling = _TEXT_WIDTH_HEADROOM_BASE, _TEXT_WIDTH_HEADROOM_CAPS
@@ -1073,7 +1096,7 @@ def _estimate_text_runs_width(
 
 
 def _textbox_padding(font_size: float) -> float:
-    """Return small text-frame slack without visibly lengthening the box."""
+    """Return deliberate text-frame slack for PowerPoint reflow safety."""
     return max(
         _TEXTBOX_PADDING_MIN_PX,
         min(_TEXTBOX_PADDING_MAX_PX, font_size * _TEXTBOX_PADDING_RATIO),
@@ -1413,6 +1436,8 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> ShapeResult | None:
         text_width = _estimate_text_runs_width(runs)
         text_height = font_size * 1.5
     padding = _textbox_padding(font_size)
+    top_slack = max(2.0, font_size * _TEXTBOX_HEIGHT_TOP_SLACK_RATIO)
+    bottom_slack = max(4.0, font_size * _TEXTBOX_HEIGHT_BOTTOM_SLACK_RATIO)
 
     # Adjust position based on text-anchor
     if text_anchor == 'middle':
@@ -1422,9 +1447,9 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> ShapeResult | None:
     else:
         box_x = x - padding
 
-    box_y = y - font_size * 0.85
+    box_y = y - font_size * 0.85 - top_slack
     box_w = text_width + padding * 2
-    box_h = text_height + padding
+    box_h = text_height + top_slack + bottom_slack
 
     text_transform = elem.get('transform', '')
     if text_transform and 'rotate' not in text_transform and not ctx.use_transform_matrix:

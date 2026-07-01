@@ -47,9 +47,10 @@ class ConvertContext:
     # Top-level <g id="..."> groups, recorded as (shape_id, svg_id) in z-order.
     # Used by the PPTX builder to emit per-element entrance timing.
     anim_targets: list = field(default_factory=list)
-    # Default-on flag: merge mergeable paragraph blocks into one editable
-    # text frame with multiple <a:p>. Disable it for strict line fidelity.
-    merge_paragraphs: bool = True
+    # Default-off flag: keep dy-stacked lines as separate text frames for
+    # strict PowerPoint line fidelity. Opt in to paragraph merging only when
+    # editability is more important than preserving authored line breaks.
+    merge_paragraphs: bool = False
     # Native PPTX image optimization. Keeps generated decks compact by
     # downsampling oversized raster assets to their rendered size.
     image_optimize: bool = True

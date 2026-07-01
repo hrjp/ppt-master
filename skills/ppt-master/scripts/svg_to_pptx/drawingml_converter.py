@@ -420,7 +420,7 @@ def convert_svg_to_slide_shapes(
     svg_path: Path,
     slide_num: int = 1,
     verbose: bool = False,
-    merge_paragraphs: bool = True,
+    merge_paragraphs: bool = False,
     image_optimize: bool = True,
     image_max_dimension: int | None = 2560,
     image_sizing: str = 'cap',
@@ -436,8 +436,8 @@ def convert_svg_to_slide_shapes(
         verbose: Print progress info.
         merge_paragraphs: When True, mergeable paragraph blocks (same x,
             dy clustered around one base line-height) become a single
-            editable text frame with multiple <a:p>. Disable it to preserve
-            the SVG's exact line layout (one textbox per line).
+            editable text frame with multiple <a:p>. Default is False to
+            preserve the SVG's exact line layout (one textbox per line).
         image_optimize: Downsample oversized raster images for PPTX export.
         image_max_dimension: Maximum optimized image dimension in pixels.
         image_sizing: ``cap`` to only cap source dimensions, ``display`` to

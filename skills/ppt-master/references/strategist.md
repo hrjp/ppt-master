@@ -76,7 +76,7 @@ The deck's **narrative + persuasion skeleton** — how the argument is organized
 **Source**:
 - User supplied their own outline / structure → it is authoritative. Transcribe it into `§IX` as given (page order + titles preserved); still lock a mode, but for register / voice and page-internal treatment, **not** to reshape — never reorder the user's pages or rewrite their given titles. Note in `design_spec.md` that the structure is user-authored. `briefing` imposes the least if no particular "讲法" is intended.
 - Beautify / re-layout workflow ([`beautify-pptx.md`](../workflows/beautify-pptx.md)) → the extracted source content is authoritative and **verbatim**, one step stricter than the user-outline case above. Each source slide becomes exactly one `§IX` page in source order; transcribe every content block word-for-word — never reshape / re-primary / condense / merge / split / reword. Lock `mode: briefing`; color (e) and typography (g) are whatever the user confirmed in the beautify plan — the source identity (theme or observed) by default, or a content / brand-aware alternative the beautify plan offered and the user picked — locked as truth (the beautify plan already ran the recommendation through the confirm UI, so do not re-recommend here). Charts / tables / images are regenerated from their extracted data in the inherited style (route chart/table data to §VII, pictures to §VIII) — data values stay frozen, the rendering is the deck's own; never carried over verbatim. Layout, hierarchy, rhythm, and visual rendering are what gets redesigned.
-- A bespoke direction the five don't give — a nameable cadence (dialectic 正反合, myth-vs-reality, countdown, Socratic), a multi-act fusion of modes, or the user's own feel (confrontational here, detached there). Either the user asks, **or you recommend it** when a fusion / bespoke direction genuinely serves the deck better than a single preset (a recommendation the user confirms, like every lock). The *kind* doesn't matter → `mode: custom` + a `mode_behavior:` paragraph that **crystallizes the intent** (act sequence or posture shifts, title voice, page rhythm, register) concretely enough for the Executor to follow per page; it reads only `spec_lock.md`, never the chat. One deck locks **one** value — a fusion is one `custom` describing the acts, never several modes. Avoid only the *dodge*: don't default to `custom` when a preset genuinely fits, and prefer a dominant mode + page-level variation when one mode leads.
+- A bespoke direction the five don't give — a nameable cadence（dialectic「正反合」、myth-vs-reality、countdown、Socratic）, a multi-act fusion of modes, or the user's own feel (confrontational here, detached there). Either the user asks, **or you recommend it** when a fusion / bespoke direction genuinely serves the deck better than a single preset (a recommendation the user confirms, like every lock). The *kind* doesn't matter → `mode: custom` + a `mode_behavior:` paragraph that **crystallizes the intent** (act sequence or posture shifts, title voice, page rhythm, register) concretely enough for the Executor to follow per page; it reads only `spec_lock.md`, never the chat. One deck locks **one** value — a fusion is one `custom` describing the acts, never several modes. Avoid only the *dodge*: don't default to `custom` when a preset genuinely fits, and prefer a dominant mode + page-level variation when one mode leads.
 - No user structure or cadence → recommend by the index's auto-selection table (content / audience signal → mode) plus the deck's stated purpose; the mode does the structural lifting. Present as a recommendation; the user may override.
 
 Write the locked value to `spec_lock.md` `- mode:` and record the rationale in `design_spec.md` (for `custom`, also write the sibling `- mode_behavior:` paragraph). Executor loads only that one mode file, or follows `mode_behavior` when the value is `custom`.
@@ -193,13 +193,15 @@ See [`../templates/icons/README.md`](../templates/icons/README.md) for the curre
 
 **Mandatory**: propose **two** combinations to the user — one concord (safe), one contrast (with tension). Do not default to "title = body, same font" without explicit user request. Pick each family by subject fit and the locked `visual_style`'s **§2 character** (read at the GATE above) — there is **no default family**; type should follow the deck's content and aesthetic, not fall back to one safe face.
 
+**Default — Japanese PPT decks use Yu Gothic (may override when user / template says otherwise)**: when the deck language is Japanese and the user did not explicitly request another family, recommend `Yu Gothic` as the first CJK sans candidate for `title` / `body` / `emphasis`. Treat it as the default Japanese PPT-safe lead, with `Meiryo` as the fallback tail when needed. Keep the existing precedence unchanged: explicit user request > template-declared stack > this default recommendation.
+
 > **Template precedence**: when a template was loaded at Step 3 via an explicit path and declares `title` / `body` font stacks in `<project_path>/templates/design_spec.md §III Typography` / §IV (or whichever heading the fused spec uses), lock those directly and skip the two-combination presentation. Same precedence as e. — user override > template values.
 
 **Cross-platform pre-installed reference**:
 
 | Category | Safe families |
 |----------|--------------|
-| CJK sans | Microsoft YaHei, SimHei, PingFang SC, Heiti SC |
+| CJK sans | Yu Gothic, Meiryo, Microsoft YaHei, SimHei, PingFang SC, Heiti SC |
 | CJK serif | SimSun, FangSong, KaiTi, Songti SC |
 | Latin sans | Arial, Calibri, Segoe UI, Verdana, Trebuchet MS, Helvetica Neue |
 | Latin serif | Times New Roman, Georgia, Cambria, Palatino, Garamond, Book Antiqua |
@@ -454,7 +456,7 @@ After the candidates, append one line:
 > Reference images: see references/ai-image-comparison/ for matching PNGs by name.
 ```
 
-**Worked example — `custom × custom`** (tail-case; e.g. 新中式 deck with `#1A1A1A` + `#F5EFE0` + `#A52A2A`):
+**Worked example — `custom × custom`** (tail-case; e.g. 新中式deck with `#1A1A1A` + `#F5EFE0` + `#A52A2A`):
 
 ```
 [Plan A] 文人雅致 — custom × custom

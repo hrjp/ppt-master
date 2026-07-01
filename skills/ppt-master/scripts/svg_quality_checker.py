@@ -14,6 +14,7 @@ import sys
 import re
 import json
 import html
+import math
 from pathlib import Path
 from typing import List, Dict, Tuple
 from collections import Counter, defaultdict
@@ -281,6 +282,13 @@ class SVGQualityChecker:
 
                 # 6. Check text wrapping methods
                 self._check_text_elements(content, result)
+
+                # 6b. Check likely text overflow against page bounds and
+                # obvious local rect containers.
+                self._check_text_layout_overflow(content, result)
+
+                # 6c. Check likely overlap between independent text blocks.
+                self._check_text_block_overlap(content, result)
 
                 # 7. Check image references (file existence and resolution)
                 self._check_image_references(content, svg_path, result)
@@ -580,6 +588,519 @@ class SVGQualityChecker:
             )
 
         self._check_unmergeable_leading_text(content, result)
+
+    _NUM_RE = re.compile(r'[+-]?(?:\d+(?:\.\d+)?|\.\d+)')
+
+    @classmethod
+    def _first_numeric(cls, value: str | None) -> float | None:
+        if not value:
+            return None
+        match = cls._NUM_RE.search(value)
+        if not match:
+            return None
+        try:
+            return float(match.group(0))
+        except ValueError:
+            return None
+
+    @classmethod
+    def _parse_text_font_size(cls, elem: ET.Element, fallback: float = 16.0) -> float:
+        size = cls._first_numeric(elem.get('font-size'))
+        if size is not None:
+            return size
+        style = elem.get('style') or ''
+        style_match = re.search(r'font-size\s*:\s*([0-9.]+)', style)
+        if style_match:
+            try:
+                return float(style_match.group(1))
+            except ValueError:
+                pass
+        return fallback
+
+    @staticmethod
+    def _is_cjk_char(char: str) -> bool:
+        code = ord(char)
+        return (
+            0x2E80 <= code <= 0x2FDF or
+            0x3000 <= code <= 0x30FF or
+            0x31F0 <= code <= 0x31FF or
+            0x3400 <= code <= 0x4DBF or
+            0x4E00 <= code <= 0x9FFF or
+            0xAC00 <= code <= 0xD7AF or
+            0xF900 <= code <= 0xFAFF or
+            0xFF01 <= code <= 0xFF60 or
+            0xFFE0 <= code <= 0xFFE6
+        )
+
+    @classmethod
+    def _estimate_text_width(cls, text: str, font_size: float) -> float:
+        units = 0.0
+        for char in text:
+            if char in {'\n', '\r'}:
+                continue
+            if char.isspace():
+                units += 0.33
+            elif cls._is_cjk_char(char):
+                units += 1.0
+            elif char in 'ilI1.,:;!|\'`':
+                units += 0.28
+            elif char in 'mwMW@#%&QO0':
+                units += 0.9
+            elif char in '()[]{}<>/\\+-=':
+                units += 0.42
+            else:
+                units += 0.56
+        return units * font_size
+
+    @classmethod
+    def _text_anchor_mode(cls, elem: ET.Element) -> str:
+        anchor = (elem.get('text-anchor') or '').strip().lower()
+        if anchor in {'middle', 'end'}:
+            return anchor
+        return 'start'
+
+    @classmethod
+    def _element_opacity(cls, elem: ET.Element) -> float:
+        values: List[float] = []
+        for key in ('opacity', 'fill-opacity', 'stroke-opacity'):
+            raw = elem.get(key)
+            if raw is None:
+                continue
+            try:
+                values.append(float(raw))
+            except ValueError:
+                continue
+
+        style = elem.get('style') or ''
+        for key in ('opacity', 'fill-opacity', 'stroke-opacity'):
+            match = re.search(rf'{re.escape(key)}\s*:\s*([0-9.]+)', style)
+            if not match:
+                continue
+            try:
+                values.append(float(match.group(1)))
+            except ValueError:
+                continue
+
+        if not values:
+            return 1.0
+        return min(values)
+
+    @classmethod
+    def _collect_text_lines(cls, text_el: ET.Element) -> List[Dict[str, float | str]]:
+        if text_el.get('transform'):
+            return []
+
+        base_x = cls._first_numeric(text_el.get('x'))
+        base_y = cls._first_numeric(text_el.get('y'))
+        base_size = cls._parse_text_font_size(text_el)
+        if base_x is None or base_y is None:
+            return []
+
+        lines: List[Dict[str, float | str]] = []
+        current_text = (text_el.text or '').strip()
+        current_x = base_x
+        current_y = base_y
+        current_size = base_size
+        line_height = base_size * 1.45
+
+        def flush_current() -> None:
+            nonlocal current_text, current_x, current_y, current_size
+            if current_text:
+                lines.append({
+                    'text': current_text,
+                    'x': current_x,
+                    'y': current_y,
+                    'font_size': current_size,
+                })
+            current_text = ''
+
+        for child in list(text_el):
+            if not cls._is_tspan(child):
+                continue
+            child_text = ''.join(child.itertext()).strip()
+            child_x = cls._first_numeric(child.get('x'))
+            child_y = cls._first_numeric(child.get('y'))
+            child_dy = cls._first_numeric(child.get('dy'))
+            child_size = cls._parse_text_font_size(child, base_size)
+            starts_new_line = child_x is not None or child_y is not None or child_dy is not None
+
+            if starts_new_line:
+                flush_current()
+                current_x = child_x if child_x is not None else base_x
+                if child_y is not None:
+                    current_y = child_y
+                elif child_dy is not None:
+                    current_y = current_y + child_dy
+                else:
+                    current_y = current_y + line_height
+                current_size = child_size
+                current_text = child_text
+            else:
+                if child_text:
+                    current_text = f"{current_text}{child_text}"
+
+        flush_current()
+        return lines
+
+    @classmethod
+    def _estimate_text_bbox(cls, text_el: ET.Element) -> Tuple[float, float, float, float] | None:
+        lines = cls._collect_text_lines(text_el)
+        if not lines:
+            return None
+
+        anchor = cls._text_anchor_mode(text_el)
+        x0 = math.inf
+        y0 = math.inf
+        x1 = -math.inf
+        y1 = -math.inf
+
+        for line in lines:
+            text = str(line['text'])
+            font_size = float(line['font_size'])
+            baseline_x = float(line['x'])
+            baseline_y = float(line['y'])
+            width = cls._estimate_text_width(text, font_size)
+            if anchor == 'middle':
+                line_x0 = baseline_x - width / 2.0
+                line_x1 = baseline_x + width / 2.0
+            elif anchor == 'end':
+                line_x0 = baseline_x - width
+                line_x1 = baseline_x
+            else:
+                line_x0 = baseline_x
+                line_x1 = baseline_x + width
+
+            line_y0 = baseline_y - font_size * 0.82
+            line_y1 = baseline_y + font_size * 0.22
+            x0 = min(x0, line_x0)
+            y0 = min(y0, line_y0)
+            x1 = max(x1, line_x1)
+            y1 = max(y1, line_y1)
+
+        return (x0, y0, x1, y1)
+
+    @classmethod
+    def _text_snippet(cls, text_el: ET.Element, limit: int = 28) -> str:
+        text = ''.join(text_el.itertext())
+        text = re.sub(r'\s+', ' ', text).strip()
+        if len(text) <= limit:
+            return text
+        return text[:limit] + '…'
+
+    @classmethod
+    def _bbox_intersection(
+        cls,
+        bbox_a: Tuple[float, float, float, float],
+        bbox_b: Tuple[float, float, float, float],
+    ) -> Tuple[float, float] | None:
+        ax0, ay0, ax1, ay1 = bbox_a
+        bx0, by0, bx1, by1 = bbox_b
+        overlap_w = min(ax1, bx1) - max(ax0, bx0)
+        overlap_h = min(ay1, by1) - max(ay0, by0)
+        if overlap_w <= 0 or overlap_h <= 0:
+            return None
+        return overlap_w, overlap_h
+
+    @classmethod
+    def _is_decorative_text(cls, text_el: ET.Element) -> bool:
+        text = cls._text_snippet(text_el, limit=200)
+        font_size = cls._parse_text_font_size(text_el)
+        opacity = cls._element_opacity(text_el)
+        if opacity <= 0.15 and font_size >= 48:
+            return True
+
+        content = text.strip()
+        if not content:
+            return True
+
+        if font_size >= 72 and len(content) <= 6 and opacity <= 0.25:
+            return True
+
+        return False
+
+    @classmethod
+    def _rect_bbox(cls, rect_el: ET.Element) -> Tuple[float, float, float, float] | None:
+        x = cls._first_numeric(rect_el.get('x'))
+        y = cls._first_numeric(rect_el.get('y'))
+        w = cls._first_numeric(rect_el.get('width'))
+        h = cls._first_numeric(rect_el.get('height'))
+        if None in {x, y, w, h}:
+            return None
+        return (float(x), float(y), float(x + w), float(y + h))
+
+    @staticmethod
+    def _bbox_contains_point(bbox: Tuple[float, float, float, float], x: float, y: float, *, pad: float = 0.0) -> bool:
+        x0, y0, x1, y1 = bbox
+        return (x0 - pad) <= x <= (x1 + pad) and (y0 - pad) <= y <= (y1 + pad)
+
+    @staticmethod
+    def _bbox_exceeds(outer: Tuple[float, float, float, float], inner: Tuple[float, float, float, float], *, tol: float = 0.0) -> bool:
+        ox0, oy0, ox1, oy1 = outer
+        ix0, iy0, ix1, iy1 = inner
+        return ix0 < ox0 - tol or iy0 < oy0 - tol or ix1 > ox1 + tol or iy1 > oy1 + tol
+
+    @staticmethod
+    def _bbox_margins(
+        outer: Tuple[float, float, float, float],
+        inner: Tuple[float, float, float, float],
+    ) -> Tuple[float, float, float, float]:
+        ox0, oy0, ox1, oy1 = outer
+        ix0, iy0, ix1, iy1 = inner
+        return (ix0 - ox0, iy0 - oy0, ox1 - ix1, oy1 - iy1)
+
+    @classmethod
+    def _find_text_container_rect(
+        cls,
+        text_el: ET.Element,
+        parent_map: Dict[ET.Element, ET.Element],
+        canvas_bbox: Tuple[float, float, float, float],
+    ) -> Tuple[float, float, float, float] | None:
+        anchor_x = cls._first_numeric(text_el.get('x'))
+        anchor_y = cls._first_numeric(text_el.get('y'))
+        if anchor_x is None or anchor_y is None:
+            return None
+
+        canvas_area = (canvas_bbox[2] - canvas_bbox[0]) * (canvas_bbox[3] - canvas_bbox[1])
+        candidate: Tuple[float, float, float, float] | None = None
+        candidate_area = math.inf
+        current = parent_map.get(text_el)
+
+        while current is not None:
+            for child in list(current):
+                if child is text_el or child.tag != f'{{{SVG_NS}}}rect':
+                    continue
+                bbox = cls._rect_bbox(child)
+                if bbox is None:
+                    continue
+                width = bbox[2] - bbox[0]
+                height = bbox[3] - bbox[1]
+                area = width * height
+                if area >= canvas_area * 0.85:
+                    continue
+                if width < 60 or height < 28:
+                    continue
+                if not cls._bbox_contains_point(bbox, anchor_x, anchor_y, pad=4.0):
+                    continue
+                if area < candidate_area:
+                    candidate = bbox
+                    candidate_area = area
+            current = parent_map.get(current)
+
+        return candidate
+
+    def _check_text_layout_overflow(self, content: str, result: Dict) -> None:
+        """Heuristically detect text likely overflowing the page or a local box.
+
+        This is intentionally conservative: it does not try to perfectly render
+        fonts, only to catch common overflow failures early (long Japanese text,
+        cards whose text extends past the bottom, page titles running off-canvas,
+        etc.).
+        """
+        try:
+            root = ET.fromstring(content)
+        except ET.ParseError:
+            return
+
+        viewbox = root.get('viewBox') or ''
+        vb_match = re.match(r'\s*([+-]?(?:\d+\.\d+|\d+))\s+([+-]?(?:\d+\.\d+|\d+))\s+([+-]?(?:\d+\.\d+|\d+))\s+([+-]?(?:\d+\.\d+|\d+))\s*$', viewbox)
+        if not vb_match:
+            return
+
+        vb_x = float(vb_match.group(1))
+        vb_y = float(vb_match.group(2))
+        vb_w = float(vb_match.group(3))
+        vb_h = float(vb_match.group(4))
+        canvas_bbox = (vb_x, vb_y, vb_x + vb_w, vb_y + vb_h)
+
+        parent_map = {child: parent for parent in root.iter() for child in parent}
+        canvas_hits: List[str] = []
+        container_hits: List[str] = []
+        tight_container_hits: List[str] = []
+
+        for text_el in root.iter(f'{{{SVG_NS}}}text'):
+            if self._is_decorative_text(text_el):
+                continue
+
+            lines = self._collect_text_lines(text_el)
+            if not lines:
+                continue
+            bbox = self._estimate_text_bbox(text_el)
+            if bbox is None:
+                continue
+
+            if self._bbox_exceeds(canvas_bbox, bbox, tol=2.0):
+                canvas_hits.append(self._text_snippet(text_el))
+                continue
+
+            container_bbox = self._find_text_container_rect(text_el, parent_map, canvas_bbox)
+            if container_bbox is None:
+                continue
+            if self._bbox_exceeds(container_bbox, bbox, tol=4.0):
+                container_hits.append(self._text_snippet(text_el))
+                continue
+
+            max_font = max(float(line['font_size']) for line in lines)
+            margins = self._bbox_margins(container_bbox, bbox)
+            line_count = len(lines)
+            box_width = container_bbox[2] - container_bbox[0]
+            box_height = container_bbox[3] - container_bbox[1]
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            width_utilization = text_width / max(1.0, box_width)
+            height_utilization = text_height / max(1.0, box_height)
+
+            # Only warn on tight fit when the block is already multiline or the
+            # single line is visibly using most of the container width. Small,
+            # intentionally compact labels should not be noisy.
+            if line_count < 2 and width_utilization < 0.82 and height_utilization < 0.55:
+                continue
+
+            min_right_slack = max(4.0, max_font * 0.2)
+            min_bottom_slack = max(6.0, max_font * (0.55 if line_count >= 2 else 0.3))
+            if margins[2] < min_right_slack or margins[3] < min_bottom_slack:
+                tight_container_hits.append(self._text_snippet(text_el))
+
+        if canvas_hits:
+            sample = ', '.join(f'"{snippet}"' for snippet in canvas_hits[:3] if snippet)
+            suffix = '' if len(canvas_hits) <= 3 else f" (+{len(canvas_hits) - 3} more)"
+            result['warnings'].append(
+                f"Detected {len(canvas_hits)} text element(s) likely extending beyond the page canvas"
+                f"{': ' + sample if sample else ''}{suffix}"
+            )
+        if container_hits:
+            sample = ', '.join(f'"{snippet}"' for snippet in container_hits[:3] if snippet)
+            suffix = '' if len(container_hits) <= 3 else f" (+{len(container_hits) - 3} more)"
+            result['warnings'].append(
+                f"Detected {len(container_hits)} text element(s) likely overflowing their local rect container"
+                f"{': ' + sample if sample else ''}{suffix}"
+            )
+        if tight_container_hits:
+            sample = ', '.join(f'"{snippet}"' for snippet in tight_container_hits[:3] if snippet)
+            suffix = '' if len(tight_container_hits) <= 3 else f" (+{len(tight_container_hits) - 3} more)"
+            result['warnings'].append(
+                f"Detected {len(tight_container_hits)} text element(s) fitting too tightly inside their local rect container"
+                f"{': ' + sample if sample else ''}{suffix}. Leave extra right/bottom slack for PPT line-wrap drift."
+            )
+
+    def _check_text_block_overlap(self, content: str, result: Dict) -> None:
+        """Warn when independent text blocks likely overlap each other.
+
+        This catches the common follow-up failure after adding wraps to fix
+        right-edge overflow: a block grows downward and collides with the next
+        textbox below.
+        """
+        try:
+            root = ET.fromstring(content)
+        except ET.ParseError:
+            return
+
+        text_items: List[Tuple[ET.Element, Tuple[float, float, float, float], str]] = []
+        for text_el in root.iter(f'{{{SVG_NS}}}text'):
+            if self._is_decorative_text(text_el):
+                continue
+            bbox = self._estimate_text_bbox(text_el)
+            if bbox is None:
+                continue
+            snippet = self._text_snippet(text_el)
+            if not snippet:
+                continue
+            text_items.append((text_el, bbox, snippet))
+
+        hits: List[Tuple[str, str]] = []
+        seen_pairs: set[Tuple[str, str]] = set()
+        for idx, (_, bbox_a, snippet_a) in enumerate(text_items):
+            for _, bbox_b, snippet_b in text_items[idx + 1:]:
+                overlap = self._bbox_intersection(bbox_a, bbox_b)
+                if overlap is None:
+                    continue
+                overlap_w, overlap_h = overlap
+                if overlap_w < 8 or overlap_h < 6:
+                    continue
+                key = tuple(sorted((snippet_a, snippet_b)))
+                if key in seen_pairs:
+                    continue
+                seen_pairs.add(key)
+                hits.append((snippet_a, snippet_b))
+
+        if hits:
+            sample = ', '.join(
+                f'"{a}" × "{b}"' for a, b in hits[:3]
+            )
+            suffix = '' if len(hits) <= 3 else f" (+{len(hits) - 3} more)"
+            result['warnings'].append(
+                f"Detected {len(hits)} likely overlapping text-block pair(s): {sample}{suffix}"
+            )
+
+    def _check_text_block_clearance(self, content: str, result: Dict) -> None:
+        """Warn when stacked text blocks leave too little vertical slack.
+
+        PPT export can increase a block's wrapped line count or line metrics even
+        when the SVG looks barely acceptable. This check flags same-column text
+        blocks whose current vertical gap is so small that a single extra wrapped
+        line is likely to collide with the next block.
+        """
+        try:
+            root = ET.fromstring(content)
+        except ET.ParseError:
+            return
+
+        text_items: List[Tuple[Tuple[float, float, float, float], str, float]] = []
+        for text_el in root.iter(f'{{{SVG_NS}}}text'):
+            if self._is_decorative_text(text_el):
+                continue
+            lines = self._collect_text_lines(text_el)
+            if not lines:
+                continue
+            bbox = self._estimate_text_bbox(text_el)
+            if bbox is None:
+                continue
+            snippet = self._text_snippet(text_el)
+            if not snippet:
+                continue
+            max_font = max(float(line['font_size']) for line in lines)
+            text_items.append((bbox, snippet, max_font))
+
+        hits: List[Tuple[str, str]] = []
+        seen_pairs: set[Tuple[str, str]] = set()
+        for idx, (bbox_a, snippet_a, font_a) in enumerate(text_items):
+            ax0, ay0, ax1, ay1 = bbox_a
+            width_a = ax1 - ax0
+            for bbox_b, snippet_b, font_b in text_items[idx + 1:]:
+                bx0, by0, bx1, by1 = bbox_b
+                width_b = bx1 - bx0
+
+                horizontal_overlap = min(ax1, bx1) - max(ax0, bx0)
+                if horizontal_overlap <= 0:
+                    continue
+                if horizontal_overlap / max(1.0, min(width_a, width_b)) < 0.45:
+                    continue
+
+                gap = None
+                if ay1 <= by0:
+                    gap = by0 - ay1
+                elif by1 <= ay0:
+                    gap = ay0 - by1
+                if gap is None:
+                    continue
+
+                min_gap = max(12.0, max(font_a, font_b) * 0.55)
+                if gap >= min_gap:
+                    continue
+
+                key = tuple(sorted((snippet_a, snippet_b)))
+                if key in seen_pairs:
+                    continue
+                seen_pairs.add(key)
+                hits.append((snippet_a, snippet_b))
+
+        if hits:
+            sample = ', '.join(
+                f'"{a}" ⇣ "{b}"' for a, b in hits[:3]
+            )
+            suffix = '' if len(hits) <= 3 else f" (+{len(hits) - 3} more)"
+            result['warnings'].append(
+                f"Detected {len(hits)} stacked text-block pair(s) with too little vertical clearance for safe PPT export: {sample}{suffix}"
+            )
 
     def _check_unmergeable_leading_text(self, content: str, result: Dict) -> None:
         """Warn when leading text cannot be normalized for paragraph merging."""

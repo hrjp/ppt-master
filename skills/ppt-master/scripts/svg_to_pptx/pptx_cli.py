@@ -174,12 +174,12 @@ Recorded narration:
                             help='(Deprecated, now default) Convert SVG to native DrawingML shapes')
     merge_group = parser.add_mutually_exclusive_group()
     merge_group.add_argument('--merge-paragraphs', action='store_true', dest='merge_paragraphs',
-                             help='Compatibility no-op: mergeable paragraph blocks are merged '
-                                  'by default.')
+                            help='Opt in to paragraph merging. Mergeable dy-stacked paragraph '
+                                'blocks become one editable text frame with multiple <a:p>.')
     merge_group.add_argument('--no-merge', action='store_false', dest='merge_paragraphs',
-                             help='Disable paragraph merging. Every dy-stacked line becomes '
-                                  'its own text frame for strict SVG line-layout fidelity.')
-    parser.set_defaults(merge_paragraphs=True)
+                            help='Keep paragraph merging disabled (default). Every dy-stacked '
+                                'line becomes its own text frame for strict SVG line-layout fidelity.')
+    parser.set_defaults(merge_paragraphs=False)
     parser.add_argument('--conversion-trace', action='store_true', default=False,
                         help='Write a JSON diagnostics report next to the native PPTX '
                              '(<output>.trace.json). Records per-slide SVG element '
